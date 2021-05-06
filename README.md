@@ -1,6 +1,3 @@
-This is experimental repo trying to extend standard .NET XSLT implementation.  
+This branch contains functional copy of official XSLT implementation.
 
-See the code branches for the experiment branches/details:
-* Cancellation
-* Orig
-* Async
+Source: https://github.com/dotnet/runtime/commit/c5288594aa563f9412d01ed7ba2b31fc9244e368 taken on 2021-04-22 06:43 CEST.
