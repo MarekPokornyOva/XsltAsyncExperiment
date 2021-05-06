@@ -18,6 +18,10 @@ using System.Xml.Xsl.Qil;
 using System.Xml.Xsl.Runtime;
 using System.Runtime.Versioning;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading.Tasks;
+using System.Threading;
+using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace System.Xml.Xsl.IlGen
 {
@@ -482,6 +486,8 @@ namespace System.Xml.Xsl.IlGen
         private readonly StaticDataManager _staticData;
         private ISourceLineInfo? _lastSourceInfo;
         private MethodInfo? _methSyncToNav;
+        AsyncInfo? _asyncInfo;
+        Label _methEnd;
 
 #if DEBUG
         private int _lblNum;
@@ -515,11 +521,14 @@ namespace System.Xml.Xsl.IlGen
         // SxS note: Using hardcoded "dump.il" is an SxS issue. Since we are doing this ONLY in debug builds
         // and only for tracing purposes and MakeVersionSafeName does not seem to be able to handle file
         // extensions correctly I decided to suppress the SxS message (as advised by SxS guys).
-        public void MethodBegin(MethodBase methInfo, ISourceLineInfo? sourceInfo, bool initWriters)
+        public void MethodBegin(MethodBase methInfo, AsyncInfo? asyncInfo, ISourceLineInfo? sourceInfo, bool initWriters)
         {
             _methInfo = methInfo;
             _ilgen = XmlILModule.DefineMethodBody(methInfo);
             _lastSourceInfo = null;
+            _asyncInfo=asyncInfo;
+            if (asyncInfo!=null)
+                _methEnd=_ilgen.DefineLabel();
 
 #if DEBUG
             if (XmlILTrace.IsEnabled)
@@ -579,6 +588,19 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         public void MethodEnd()
         {
+         if (_asyncInfo!=null)
+         {
+            //builder.SetResult()
+#warning zrusit pop a odkomentovat
+            if (_asyncInfo.BuilderFb.FieldType.GenericTypeArguments.Length!=0)
+               Emit(OpCodes.Pop);
+            //pokud tam je hodnota, musim ji ulozit do local a pak ji poslat do AsyncValueTaskMethodBuilder.SetResult
+            //LdargRaw(OpCodes.Ldarg_0);
+            //Emit(OpCodes.Ldflda,_asyncInfo.BuilderFb);
+            //Call(_asyncInfo.BuilderFb.FieldType.GetMethod(nameof(AsyncValueTaskMethodBuilder.SetResult))!);
+
+            MarkLabel(_methEnd);
+         }
             Emit(OpCodes.Ret);
 
 #if DEBUG
@@ -671,18 +693,26 @@ namespace System.Xml.Xsl.IlGen
 
         public void LoadQueryRuntime()
         {
-            Emit(OpCodes.Ldarg_0);
+            //Emit(OpCodes.Ldarg_0);
+         Emit(OpCodes.Ldarg_0);
+         Emit(OpCodes.Ldfld,_asyncInfo!.ParmFieldBuilders[0]);
         }
+
+      public void LoadCancellationToken()
+		{
+         Emit(OpCodes.Ldarg_0);
+         Emit(OpCodes.Ldfld,_asyncInfo!.ParmFieldBuilders[1]);
+		}
 
         public void LoadQueryContext()
         {
-            Emit(OpCodes.Ldarg_0);
+            LoadQueryRuntime();
             Call(XmlILMethods.Context);
         }
 
         public void LoadXsltLibrary()
         {
-            Emit(OpCodes.Ldarg_0);
+            LoadQueryRuntime();
             Call(XmlILMethods.XsltLib);
         }
 
@@ -700,7 +730,8 @@ namespace System.Xml.Xsl.IlGen
         {
             if (paramPos <= ushort.MaxValue)
             {
-                Emit(OpCodes.Ldarg, paramPos);
+            Emit(OpCodes.Ldarg_0);
+            Emit(OpCodes.Ldfld,_asyncInfo!.ParmFieldBuilders[paramPos]);
             }
             else
             {
@@ -846,6 +877,102 @@ namespace System.Xml.Xsl.IlGen
                 // sequence points.
                 MarkSequencePoint(SourceLineInfo.NoSource);
             }
+
+			Type retType = meth.ReturnType;
+         bool noGenParm;
+         if (
+            (!string.Equals(meth.Name,nameof(ValueTask.FromCanceled),StringComparison.Ordinal))
+            &&(!string.Equals(meth.Name,nameof(ValueTask.FromResult),StringComparison.Ordinal))
+            &&(!string.Equals(meth.Name,"get_"+nameof(ValueTask.CompletedTask),StringComparison.Ordinal))
+            &&((noGenParm=(retType==typeof(ValueTask)))||(retType.IsConstructedGenericType&&retType.GetGenericTypeDefinition()==typeof(ValueTask<>)))
+            )
+         {
+            //MethodInfo getAwaiterMi = retType.GetMethod(nameof(ValueTask.GetAwaiter))!;
+            //Emit(noGenParm ? OpCodes.Stloc_0 : OpCodes.Stloc_2);
+            //Emit(OpCodes.Ldloca_S,noGenParm ? 0 : 2);
+            //Call(getAwaiterMi);
+            //Emit(noGenParm ? OpCodes.Stloc_1 : OpCodes.Stloc_3);
+            //Emit(OpCodes.Ldloca_S,noGenParm ? 1 : 3);
+            //Call(getAwaiterMi.ReturnType.GetMethod(nameof(ValueTaskAwaiter.GetResult))!);
+
+#warning .GetAwaiter().GetResult() za await/states - jak na to?
+            /*
+Místo .GetAwaiter().GetResult() vygenerovat:
+.GetAwaiter();
+_state = ...
+if (!awaiter.IsCompleted)
+{
+_awaiter = awaiter;
+awaiter.OnCompleted(new Action(MoveNext));
+return;
+}
+MarkLabel();
+Call awaiter.GetResult();
+*/
+
+            MethodInfo getAwaiterMi = retType.GetMethod(nameof(ValueTask.GetAwaiter))!;
+            LocalBuilder valueTaskLb = DeclareLocal("valTask",retType);
+            LocalBuilder awaiterLb = DeclareLocal("awaiter",getAwaiterMi.ReturnType);
+            FieldBuilder awaiterFb = _asyncInfo!.HelperTb.DefineField("_awaiter"+Guid.NewGuid(),awaiterLb.LocalType,FieldAttributes.Private);
+            //awaiter = ...GetAwaiter();
+            Emit(OpCodes.Stloc,valueTaskLb);
+            Emit(OpCodes.Ldloca_S,valueTaskLb);
+            Call(getAwaiterMi);
+            Emit(OpCodes.Stloc_S,awaiterLb);
+            //_state = ...;
+            Emit(OpCodes.Ldarg_0);
+            Emit(OpCodes.Ldc_I4,++_asyncInfo.MoveNextPart);
+            Emit(OpCodes.Stfld,_asyncInfo.StateFb);
+
+
+
+
+
+#error Nesmím použít return, protože pùvodní generátor pøedpøipravuje hodnoty na stack / Mustn't use "return" statement, because original generator prepares values on stack.
+/*
+Pø.:
+ldarg_1 //a context
+ldc_i4_0 //a constant value
+Call a method which returns another value and should become async (-> return ValueTask<sometype>)
+if (!ValueTask<sometype>.GetAwaiter().IsCompleted)
+{
+   ValueTask<sometype>.GetAwaiter().OnCompleted(this method);
+   return;
+}
+MarkLabel(StateXContinue);
+ValueTask<sometype>.GetAwaiter().GetResult(); - this pushes another value
+Call a method on the previously pushed context and provide both previously pushed constant value and async result.
+*/
+
+            //if (awaiter.IsCompleted)
+            Label isCompleted = DefineLabel();
+            Emit(OpCodes.Ldloca_S,awaiterLb);
+            Call(awaiterLb.LocalType.GetProperty(nameof(ValueTaskAwaiter.IsCompleted))!.GetMethod!);
+			   Emit(OpCodes.Brtrue_S,isCompleted);
+            //_awaiter = awaiter;
+            Emit(OpCodes.Ldarg_0);
+            Emit(OpCodes.Ldloc_S,awaiterLb);
+            Emit(OpCodes.Stfld,awaiterFb);
+			   //awaiter.OnCompleted(new Action(MoveNext));
+   			Emit(OpCodes.Ldloca_S,awaiterLb);
+            Emit(OpCodes.Ldarg_0);
+            Emit(OpCodes.Ldobj,_asyncInfo.HelperTb);
+            Emit(OpCodes.Box,_asyncInfo.HelperTb);
+            Emit(OpCodes.Ldftn,_asyncInfo.MoveNextMb);
+   			Emit(OpCodes.Newobj,typeof(Action).GetConstructor(new[] { typeof(object),typeof(IntPtr) })!);
+            Call(awaiterLb.LocalType.GetMethod(nameof(ValueTaskAwaiter.OnCompleted))!);
+            //return;
+            Emit(OpCodes.Br,_methEnd);
+            //end if
+            MarkLabel(isCompleted);
+
+
+
+            //if (awaiterLb.LocalType!=typeof(ValueTaskAwaiter)) //leave it commented out - to call GetResult() even if it don't return any value - just for sure
+            //awaiter.GetResult();
+            Emit(OpCodes.Ldloca_S,awaiterLb);
+            Emit(OpCodes.Call,getAwaiterMi.ReturnType.GetMethod(nameof(ValueTaskAwaiter.GetResult))!);
+         }
         }
 
         public void Construct(ConstructorInfo constr)
@@ -1586,6 +1713,15 @@ namespace System.Xml.Xsl.IlGen
             _ilgen!.Emit(opcode, constrInfo);
         }
 
+        public void Emit(OpCode opcode, MethodInfo methodInfo)
+        {
+#if DEBUG
+            if (XmlILTrace.IsEnabled)
+                _writerDump!.WriteLine("  {0, -10} {1}", opcode.Name, methodInfo);
+#endif
+            _ilgen!.Emit(opcode,methodInfo);
+        }
+
         public void Emit(OpCode opcode, double dblVal)
         {
 #if DEBUG
@@ -1626,7 +1762,7 @@ namespace System.Xml.Xsl.IlGen
 
         public void Emit(OpCode opcode, Label lblVal)
         {
-            Debug.Assert(!opcode.Equals(OpCodes.Br) && !opcode.Equals(OpCodes.Br_S), "Use EmitUnconditionalBranch and be careful not to emit unverifiable code.");
+            //Debug.Assert(!opcode.Equals(OpCodes.Br) && !opcode.Equals(OpCodes.Br_S), "Use EmitUnconditionalBranch and be careful not to emit unverifiable code.");
 #if DEBUG
             if (XmlILTrace.IsEnabled)
                 _writerDump!.WriteLine("  {0, -10} Label {1}", opcode.Name, _symbols![lblVal]);

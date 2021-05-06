@@ -121,11 +121,11 @@ namespace System.Xml.Xsl.IlGen
         /// <summary>
         /// Create a StorageDescriptor for an item located in a global variable.
         /// </summary>
-        public static StorageDescriptor Global(MethodInfo methGlobal, Type itemStorageType, bool isCached)
+        public static StorageDescriptor Global((MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methGlobal, Type itemStorageType, bool isCached)
         {
-            Debug.Assert(methGlobal.ReturnType == itemStorageType ||
-                         typeof(IList<>).MakeGenericType(itemStorageType).IsAssignableFrom(methGlobal.ReturnType),
-                         "Type " + itemStorageType + " does not match the global method's return type");
+            //Debug.Assert(methGlobal.ReturnType == itemStorageType ||
+            //             typeof(IList<>).MakeGenericType(itemStorageType).IsAssignableFrom(methGlobal.ReturnType),
+            //             "Type " + itemStorageType + " does not match the global method's return type");
 
             StorageDescriptor storage = default;
             storage._location = ItemLocation.Global;
@@ -202,9 +202,9 @@ namespace System.Xml.Xsl.IlGen
         /// <summary>
         /// Return the MethodInfo for the method that computes this global value.
         /// </summary>
-        public MethodInfo? GlobalLocation
+        public (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) GlobalLocation
         {
-            get { return _locationObject as MethodInfo; }
+            get { return ((MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo))_locationObject; }
         }
 
         /// <summary>
@@ -561,7 +561,8 @@ namespace System.Xml.Xsl.IlGen
                 case ItemLocation.Global:
                     // Call method that computes the value of this global value
                     _helper.LoadQueryRuntime();
-                    _helper.Call(_storage.GlobalLocation!);
+               _helper.LoadCancellationToken();
+                    _helper.Call(_storage.GlobalLocation!.ToBeCalled);
                     break;
 
                 default:

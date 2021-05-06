@@ -8,6 +8,11 @@ using System.Reflection.Emit;
 using System.Security;
 using System.Xml.Xsl.Runtime;
 using System.Runtime.Versioning;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Runtime.CompilerServices;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace System.Xml.Xsl.IlGen
 {
@@ -28,6 +33,7 @@ namespace System.Xml.Xsl.IlGen
         private TypeBuilder? _typeBldr;
         private Hashtable _methods;
         private readonly bool _useLRE, _emitSymbols;
+      List<TypeBuilder> _nestedTypes = new List<TypeBuilder>();
 
         private const string RuntimeName = "{" + XmlReservedNs.NsXslDebug + "}" + "runtime";
 
@@ -114,9 +120,9 @@ namespace System.Xml.Xsl.IlGen
         /// <summary>
         /// Define a method in this module with the specified name and parameters.
         /// </summary>
-        public MethodInfo DefineMethod(string name, Type returnType, Type[] paramTypes, string?[] paramNames, XmlILMethodAttributes xmlAttrs)
+        public (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) DefineMethod(string name, Type returnType, Type[] paramTypes, string?[] paramNames, XmlILMethodAttributes xmlAttrs)
         {
-            MethodInfo methResult;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methResult;
             int uniqueId = 1;
             string nameOrig = name;
             Type[] paramTypesNew;
@@ -133,10 +139,16 @@ namespace System.Xml.Xsl.IlGen
             if (!isRaw)
             {
                 // XmlQueryRuntime is always 0th parameter
-                paramTypesNew = new Type[paramTypes.Length + 1];
+                paramTypesNew = new Type[paramTypes.Length + 2];
                 paramTypesNew[0] = typeof(XmlQueryRuntime);
-                Array.Copy(paramTypes, 0, paramTypesNew, 1, paramTypes.Length);
+                paramTypesNew[1] = typeof(CancellationToken);
+                Array.Copy(paramTypes, 0, paramTypesNew, 2, paramTypes.Length);
                 paramTypes = paramTypesNew;
+
+         if (returnType==typeof(void))
+            returnType=typeof(ValueTask);
+         else
+            returnType=typeof(ValueTask<>).MakeGenericType(returnType);
             }
 
             if (!_useLRE)
@@ -155,22 +167,73 @@ namespace System.Xml.Xsl.IlGen
                 }
 
                 if (!isRaw)
+                { 
                     methBldr.DefineParameter(1, ParameterAttributes.None, RuntimeName);
+                    methBldr.DefineParameter(2, ParameterAttributes.None, "cancellationToken");
+                }
 
                 for (int i = 0; i < paramNames.Length; i++)
                 {
                     if (paramNames[i] != null && paramNames[i]!.Length != 0)
-                        methBldr.DefineParameter(i + (isRaw ? 1 : 2), ParameterAttributes.None, paramNames[i]);
+                        methBldr.DefineParameter(i + (isRaw ? 1 : 3), ParameterAttributes.None, paramNames[i]);
                 }
 
-                methResult = methBldr;
+            if (isRaw)
+               methResult=(methBldr, methBldr,null);
+            else
+            {
+               //Krok 1 - Každou vygenerovanou methodu, nahradit speciální strukturou. Ta methoda bude jen iniciovat tu strukturu.Start().
+               //Krok 2 - celé tìlo vygenerované methody pøenést do struktury.MoveNext(). Zatím bez State - stále používat .GetAwaiter().GetResult(). Otestovat.
+               //Krok 3 - v GenerateHelper.cs"public void Call(MethodInfo meth)" nahradit .GetAwaiter().GetResult() za await/states.
+               //Done
+               (FieldBuilder[] ParmFieldBuilders, MethodBuilder BusinessMb, TypeBuilder TypeBuilder, MethodBuilder StartMb, AsyncInfo MoveNextInfo) asyncHelperInfo = CreateAsyncHelper(name,returnType,paramTypes,paramNames);
+               ILGenerator gen = methBldr.GetILGenerator()!;
+               Label codeBegin = gen.DefineLabel();
+               Label methodEndLabel = gen.DefineLabel();
+               int cancellationTokenParmIndex = 1;
+               gen.Emit(OpCodes.Ldarga_S,cancellationTokenParmIndex);
+               gen.Emit(OpCodes.Call,typeof(CancellationToken).GetProperty(nameof(CancellationToken.IsCancellationRequested))!.GetMethod!);
+               gen.Emit(OpCodes.Brfalse,codeBegin);
+               gen.Emit(OpCodes.Ldarg,cancellationTokenParmIndex);
+               MethodInfo fromCancelledMi = methBldr.ReturnType==typeof(ValueTask)
+                  ? typeof(ValueTask).GetMethod(nameof(ValueTask.FromCanceled),0,new[] { typeof(CancellationToken) })!
+                  : typeof(ValueTask).GetMethod(nameof(ValueTask.FromCanceled),1,new[] { typeof(CancellationToken) })!.MakeGenericMethod(methBldr.ReturnType.GenericTypeArguments[0]);
+               gen.Emit(OpCodes.Call,fromCancelledMi);
+               gen.Emit(OpCodes.Br,methodEndLabel);
+               gen.MarkLabel(codeBegin);
+               //save params to helper's fields
+               gen.DeclareLocal(asyncHelperInfo.TypeBuilder);
+               int a = 0;
+               foreach (Type paramType in paramTypes)
+               {
+                  gen.Emit(OpCodes.Ldloca_S,0);
+                  gen.Emit(OpCodes.Ldarg,a);
+                  gen.Emit(OpCodes.Stfld,asyncHelperInfo.ParmFieldBuilders[a]);
+                  a++;
+               }
+               ////helper._builder=AsyncValueTaskMethodBuilder.Create(); - no need to initialize default struct
+               //gen.Emit(OpCodes.Ldloca_S,0);
+               //gen.Emit(OpCodes.Call,builderFb.FieldType.GetMethod(nameof(AsyncValueTaskMethodBuilder.Create))!);
+               //gen.Emit(OpCodes.Stfld,builderFb);
+               //helper._state=-1
+               gen.Emit(OpCodes.Ldloca_S,0);
+               gen.Emit(OpCodes.Ldc_I4_M1);
+               gen.Emit(OpCodes.Stfld,asyncHelperInfo.MoveNextInfo.StateFb);
+               //helper.Start();
+               gen.Emit(OpCodes.Ldloca_S,0);
+               gen.Emit(OpCodes.Call,asyncHelperInfo.StartMb);
+               gen.MarkLabel(methodEndLabel);
+               gen.Emit(OpCodes.Ret);
+
+               methResult=(asyncHelperInfo.BusinessMb, methBldr, asyncHelperInfo.MoveNextInfo);
+            }
             }
             else
             {
                 DynamicMethod methDyn = new DynamicMethod(name, returnType, paramTypes, s_LREModule);
                 methDyn.InitLocals = true;
 
-                methResult = methDyn;
+                methResult = (methDyn, methDyn, null);
             }
 
             // Index method by name
@@ -240,6 +303,10 @@ namespace System.Xml.Xsl.IlGen
 
             if (!_useLRE)
             {
+            foreach (TypeBuilder tb in _nestedTypes)
+               tb.CreateTypeInfo()!.AsType();
+            _nestedTypes.Clear();
+
                 typBaked = _typeBldr!.CreateTypeInfo()!.AsType();
 
                 // Replace all MethodInfos in this.methods
@@ -279,5 +346,88 @@ namespace System.Xml.Xsl.IlGen
 
             return name;
         }
+
+
+      (FieldBuilder[] ParmFieldBuilders, MethodBuilder BusinessMb, TypeBuilder Type, MethodBuilder StartMb, AsyncInfo MoveNextInfo) CreateAsyncHelper(string name,Type returnType,Type[] paramTypes,string?[] paramNames)
+		{
+         TypeBuilder helperTb = _typeBldr!.DefineNestedType($"~{name}::helper",TypeAttributes.NestedPrivate|TypeAttributes.AutoClass|TypeAttributes.AnsiClass|TypeAttributes.Sealed|TypeAttributes.BeforeFieldInit,typeof(ValueType));
+         this._nestedTypes.Add(helperTb);
+
+         void Log(MethodBuilder meth,ILGenerator gen,string text)
+         {
+            gen.Emit(OpCodes.Ldstr,$"{name}-{meth.Name}:{text}");
+            gen.Emit(OpCodes.Call,typeof(Console).GetMethod(nameof(Console.WriteLine),BindingFlags.Public|BindingFlags.Static,new[] { typeof(string) })!);
+         }
+
+         Type? returnTypeRaw = returnType==typeof(ValueTask) ? default : returnType.GenericTypeArguments[0];
+         FieldBuilder builderFb = helperTb.DefineField("_builder",returnTypeRaw==default ? typeof(AsyncValueTaskMethodBuilder) : typeof(AsyncValueTaskMethodBuilder<>).MakeGenericType(returnTypeRaw),FieldAttributes.Private);
+         FieldBuilder stateFb = helperTb.DefineField("_state",typeof(int),FieldAttributes.Assembly);
+         int a = -1;
+         int b = -3;
+         (Type Type, string Name)[] parms = paramTypes.Select(pType =>
+         {
+            a++;
+            b++;
+            return (pType, a switch
+            {
+               0 => RuntimeName,
+               1 => "cancellationToken",
+               _ => ((paramNames!=default)&&(paramNames.Length>b) ? paramNames![b] : null)??"parm"+a
+            });
+         }).ToArray();
+         FieldBuilder[] fieldBuilders = parms.Select(x => helperTb.DefineField(x.Name,x.Type,FieldAttributes.Public)).ToArray();
+
+         //neco MoveNext(parms)
+         MethodBuilder moveNextWithParmsMb = helperTb.DefineMethod(name+"-MoveNextTemp",MethodAttributes.Private|MethodAttributes.HideBySig,CallingConventions.HasThis);
+         moveNextWithParmsMb.SetReturnType(typeof(void));
+         moveNextWithParmsMb.SetParameters(Type.EmptyTypes);
+#warning Must generate _state checking code
+
+         //void MoveNext()
+         MethodBuilder moveNextMb = helperTb.DefineMethod("MoveNext",MethodAttributes.Private|MethodAttributes.HideBySig,CallingConventions.HasThis);
+         moveNextMb.SetReturnType(typeof(void));
+         moveNextMb.SetParameters(Type.EmptyTypes);
+         ILGenerator gen = moveNextMb.GetILGenerator();
+         //try
+         gen.BeginExceptionBlock();
+         Log(moveNextMb,gen,"Begin");
+         gen.Emit(OpCodes.Ldarg_0);
+         gen.Emit(OpCodes.Call,moveNextWithParmsMb);
+         Log(moveNextMb,gen,"End");
+         //catch
+         gen.BeginCatchBlock(typeof(Exception));
+         LocalBuilder exLb = gen.DeclareLocal(typeof(Exception),false);
+         gen.Emit(OpCodes.Stloc,exLb);
+         gen.Emit(OpCodes.Ldarg_0);
+         gen.Emit(OpCodes.Ldflda,builderFb);
+         gen.Emit(OpCodes.Ldloc_S,exLb);
+         gen.Emit(OpCodes.Call,builderFb.FieldType.GetMethod(nameof(AsyncValueTaskMethodBuilder.SetException))!);
+         //Emit(OpCodes.Leave,_methEnd); - neni potreba; dela to automaticky
+         gen.EndExceptionBlock();
+         gen.Emit(OpCodes.Ret);
+
+         //Start
+         MethodBuilder startMb = helperTb.DefineMethod("Start",MethodAttributes.Public|MethodAttributes.HideBySig,CallingConventions.HasThis);
+         startMb.SetReturnType(returnType);
+         startMb.SetParameters(Type.EmptyTypes);
+         gen=startMb.GetILGenerator();
+         Label skipMoveNextCall = gen.DefineLabel();
+         //if (_state == -1)
+         gen.Emit(OpCodes.Ldarg_0);
+         gen.Emit(OpCodes.Ldfld,stateFb);
+         gen.Emit(OpCodes.Ldc_I4_M1);
+         gen.Emit(OpCodes.Bne_Un_S,skipMoveNextCall);
+         //MoveNext();
+         gen.Emit(OpCodes.Ldarg_0);
+         gen.Emit(OpCodes.Call,moveNextMb);
+         gen.MarkLabel(skipMoveNextCall);
+         //return _builder.Task;
+         gen.Emit(OpCodes.Ldarg_0);
+         gen.Emit(OpCodes.Ldflda,builderFb);
+         gen.Emit(OpCodes.Call,builderFb.FieldType.GetProperty(nameof(AsyncValueTaskMethodBuilder.Task))!.GetMethod!);
+         gen.Emit(OpCodes.Ret);
+
+         return (fieldBuilders, moveNextWithParmsMb, helperTb, startMb, new AsyncInfo(stateFb,moveNextMb,helperTb,fieldBuilders,builderFb) { MoveNextPart=-1 });
+      }
     }
 }

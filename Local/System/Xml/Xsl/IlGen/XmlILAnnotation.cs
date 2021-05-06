@@ -13,7 +13,7 @@ namespace System.Xml.Xsl.IlGen
     internal sealed class XmlILAnnotation : ListBase<object?>
     {
         private readonly object? _annPrev;
-        private MethodInfo? _funcMethod;
+        private (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo)? _funcMethod;
         private int _argPos;
         private IteratorDescriptor? _iterInfo;
         private XmlILConstructInfo? _constrInfo;
@@ -54,7 +54,7 @@ namespace System.Xml.Xsl.IlGen
         /// User-defined functions and global variables and parameters are bound to Clr MethodInfo objects.
         /// Attached to Function, global Let, and global Parameter nodes.
         /// </summary>
-        public MethodInfo? FunctionBinding
+        public (MethodInfo ToBeGenerated, MethodInfo ToBeCalled,AsyncInfo? AsyncInfo)? FunctionBinding
         {
             get { return _funcMethod; }
             set { _funcMethod = value; }
