@@ -46,7 +46,7 @@ namespace System.Xml.Xsl.IlGen
         /// <summary>
         /// Visits the specified QilExpression graph and generates MSIL code.
         /// </summary>
-        public void Visit(QilExpression qil, GenerateHelper helper, MethodInfo methRoot)
+        public void Visit(QilExpression qil, GenerateHelper helper, MethodInfo methRoot, AsyncInfo asyncInfo)
         {
             _qil = qil;
             _helper = helper;
@@ -69,7 +69,7 @@ namespace System.Xml.Xsl.IlGen
             }
 
             // Build the root expression
-            _helper.MethodBegin(methRoot, null, true);
+            _helper.MethodBegin(methRoot,asyncInfo, null, true);
             StartNestedIterator(qil.Root);
             Visit(qil.Root);
             Debug.Assert(_iterCurr.Storage.Location == ItemLocation.None, "Root expression should have been pushed to the writer.");
@@ -84,7 +84,7 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         private void PrepareGlobalValues(QilList globalIterators)
         {
-            MethodInfo? methGlobal;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo)? methGlobal;
             IteratorDescriptor iterInfo;
 
             foreach (QilIterator iter in globalIterators)
@@ -93,13 +93,13 @@ namespace System.Xml.Xsl.IlGen
 
                 // Get metadata for method which computes this global's value
                 methGlobal = XmlILAnnotation.Write(iter).FunctionBinding;
-                Debug.Assert(methGlobal != null, "Metadata for global value should have already been computed");
+                Debug.Assert(methGlobal.HasValue, "Metadata for global value should have already been computed");
 
                 // Create an IteratorDescriptor for this global value
                 iterInfo = new IteratorDescriptor(_helper);
 
                 // Iterator items will be stored in a global location
-                iterInfo.Storage = StorageDescriptor.Global(methGlobal, GetItemStorageType(iter), !iter.XmlType!.IsSingleton);
+                iterInfo.Storage = StorageDescriptor.Global(methGlobal.Value, GetItemStorageType(iter), !iter.XmlType!.IsSingleton);
 
                 // Associate IteratorDescriptor with parameter
                 XmlILAnnotation.Write(iter).CachedIteratorDescriptor = iterInfo;
@@ -112,7 +112,7 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         private void VisitGlobalValues(QilList globalIterators)
         {
-            MethodInfo methGlobal;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methGlobal;
             Label lblGetGlobal, lblComputeGlobal;
             bool isCached;
             int idxValue;
@@ -129,7 +129,7 @@ namespace System.Xml.Xsl.IlGen
                 idxValue = _helper.StaticData.DeclareGlobalValue(iter.DebugName!);
 
                 // Generate code for this method
-                _helper.MethodBegin(methGlobal, iter.SourceLine, false);
+                _helper.MethodBegin(methGlobal.ToBeGenerated, methGlobal.AsyncInfo, iter.SourceLine, false);
 
                 lblGetGlobal = _helper.DefineLabel();
                 lblComputeGlobal = _helper.DefineLabel();
@@ -211,7 +211,7 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         private void Function(QilFunction ndFunc)
         {
-            MethodInfo methFunc;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methFunc;
             int paramId;
             IteratorDescriptor iterInfo;
             bool useWriter;
@@ -225,7 +225,7 @@ namespace System.Xml.Xsl.IlGen
                 iterInfo = new IteratorDescriptor(_helper);
 
                 // Add one to parameter index, as 0th parameter is always "this"
-                paramId = XmlILAnnotation.Write(iter).ArgumentPosition + 1;
+                paramId = XmlILAnnotation.Write(iter).ArgumentPosition + 2;
 
                 // The ParameterInfo for each argument should be set as its location
                 iterInfo.Storage = StorageDescriptor.Parameter(paramId, GetItemStorageType(iter), !iter.XmlType!.IsSingleton);
@@ -234,11 +234,11 @@ namespace System.Xml.Xsl.IlGen
                 XmlILAnnotation.Write(iter).CachedIteratorDescriptor = iterInfo;
             }
 
-            methFunc = XmlILAnnotation.Write(ndFunc).FunctionBinding!;
+            methFunc = XmlILAnnotation.Write(ndFunc).FunctionBinding!.Value;
             useWriter = (XmlILConstructInfo.Read(ndFunc).ConstructMethod == XmlILConstructMethod.Writer);
 
             // Generate query code from QilExpression tree
-            _helper.MethodBegin(methFunc, ndFunc.SourceLine, useWriter);
+            _helper.MethodBegin(methFunc.ToBeGenerated, methFunc.AsyncInfo, ndFunc.SourceLine, useWriter);
 
             foreach (QilIterator iter in ndFunc.Arguments)
             {
@@ -2546,12 +2546,13 @@ namespace System.Xml.Xsl.IlGen
         protected override QilNode VisitInvoke(QilInvoke ndInvoke)
         {
             QilFunction ndFunc = ndInvoke.Function;
-            MethodInfo methInfo = XmlILAnnotation.Write(ndFunc).FunctionBinding!;
+            MethodInfo methInfo = XmlILAnnotation.Write(ndFunc).FunctionBinding!.Value.ToBeCalled;
             bool useWriter = (XmlILConstructInfo.Read(ndFunc).ConstructMethod == XmlILConstructMethod.Writer);
             Debug.Assert(!XmlILConstructInfo.Read(ndInvoke).PushToWriterFirst || useWriter);
 
             // Push XmlQueryRuntime onto the stack as the first parameter
             _helper.LoadQueryRuntime();
+         _helper.LoadCancellationToken();
 
             // Generate code to push each Invoke argument onto the stack
             for (int iArg = 0; iArg < ndInvoke.Arguments.Count; iArg++)

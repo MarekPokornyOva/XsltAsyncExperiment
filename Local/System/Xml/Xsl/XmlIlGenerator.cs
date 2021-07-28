@@ -14,10 +14,12 @@ using System.Xml.Xsl.Qil;
 using System.Xml.Xsl.Runtime;
 using System.Runtime.Versioning;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace System.Xml.Xsl
 {
-    internal delegate void ExecuteDelegate(XmlQueryRuntime runtime);
+    internal delegate ValueTask ExecuteDelegate(XmlQueryRuntime runtime,CancellationToken cancellationToken);
 
 
     /// <summary>
@@ -128,13 +130,13 @@ namespace System.Xml.Xsl
 
             // Create metadata for the Execute function, which is the entry point to the query
             // public static void Execute(XmlQueryRuntime);
-            MethodInfo methExec = _module.DefineMethod("Execute", typeof(void), Type.EmptyTypes, Array.Empty<string>(), XmlILMethodAttributes.NonUser);
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methExec = _module.DefineMethod("Execute", typeof(void), Type.EmptyTypes, Array.Empty<string>(), XmlILMethodAttributes.NonUser);
 
             // Create metadata for the root expression
             // public void Root()
             Debug.Assert(_qil.Root != null);
             XmlILMethodAttributes methAttrs = (_qil.Root.SourceLine == null) ? XmlILMethodAttributes.NonUser : XmlILMethodAttributes.None;
-            MethodInfo methRoot = _module.DefineMethod("Root", typeof(void), Type.EmptyTypes, Array.Empty<string>(), methAttrs);
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methRoot = _module.DefineMethod("Root", typeof(void), Type.EmptyTypes, Array.Empty<string>(), methAttrs);
 
             // Declare all early bound function objects
             foreach (EarlyBoundInfo info in _qil.EarlyBoundTypes)
@@ -150,11 +152,11 @@ namespace System.Xml.Xsl
             CreateGlobalValueMetadata(_qil.GlobalParameterList);
 
             // Generate Execute method
-            GenerateExecuteFunction(methExec, methRoot);
+            GenerateExecuteFunction(methExec.ToBeGenerated, methExec.AsyncInfo!, methRoot.ToBeCalled);
 
             // Visit the QilExpression graph
             _xmlIlVisitor = new XmlILVisitor();
-            _xmlIlVisitor.Visit(_qil, _helper, methRoot);
+            _xmlIlVisitor.Visit(_qil, _helper, methRoot.ToBeGenerated, methRoot.AsyncInfo!);
 
             // Collect all static information required by the runtime
             XmlQueryStaticData staticData = new XmlQueryStaticData(
@@ -191,7 +193,7 @@ namespace System.Xml.Xsl
         /// </summary>
         private void CreateFunctionMetadata(IList<QilNode> funcList)
         {
-            MethodInfo methInfo;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methInfo;
             Type[] paramTypes;
             string[] paramNames;
             Type typReturn;
@@ -248,7 +250,7 @@ namespace System.Xml.Xsl
         /// </summary>
         private void CreateGlobalValueMetadata(IList<QilNode> globalList)
         {
-            MethodInfo methInfo;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled, AsyncInfo? AsyncInfo) methInfo;
             Type typReturn;
             XmlILMethodAttributes methAttrs;
 
@@ -267,9 +269,9 @@ namespace System.Xml.Xsl
         /// <summary>
         /// Generate the "Execute" method, which is the entry point to the query.
         /// </summary>
-        private MethodInfo GenerateExecuteFunction(MethodInfo methExec, MethodInfo methRoot)
+        private MethodInfo GenerateExecuteFunction(MethodInfo methExec, AsyncInfo asyncInfo, MethodInfo methRoot)
         {
-            _helper!.MethodBegin(methExec, null, false);
+            _helper!.MethodBegin(methExec,asyncInfo, null, false);
 
             // Force some or all global values to be evaluated at start of query
             EvaluateGlobalValues(_qil!.GlobalVariableList);
@@ -277,6 +279,7 @@ namespace System.Xml.Xsl
 
             // Root(runtime);
             _helper.LoadQueryRuntime();
+            _helper.LoadCancellationToken();
             _helper.Call(methRoot);
 
             _helper.MethodEnd();
@@ -298,9 +301,9 @@ namespace System.Xml.Xsl
                             typeof(XPathNavigator),
                             new Type[] { typeof(XPathNavigator), typeof(XPathNavigator) },
                             new string?[] { null, null },
-                            XmlILMethodAttributes.NonUser | XmlILMethodAttributes.Raw);
+                            XmlILMethodAttributes.NonUser | XmlILMethodAttributes.Raw).ToBeGenerated;
 
-            _helper!.MethodBegin(meth, null, false);
+            _helper!.MethodBegin(meth, null, null, false);
 
             // if (navigatorThis != null && navigatorThis.MoveTo(navigatorThat))
             //     return navigatorThis;
@@ -328,7 +331,7 @@ namespace System.Xml.Xsl
         /// </summary>
         private void EvaluateGlobalValues(IList<QilNode> iterList)
         {
-            MethodInfo? methInfo;
+            (MethodInfo ToBeGenerated, MethodInfo ToBeCalled,AsyncInfo? AsyncInfo)? methInfo;
 
             foreach (QilIterator ndIter in iterList)
             {
@@ -337,10 +340,11 @@ namespace System.Xml.Xsl
                 {
                     // Get MethodInfo that evaluates the global value and discard its return value
                     methInfo = XmlILAnnotation.Write(ndIter).FunctionBinding;
-                    Debug.Assert(methInfo != null, "MethodInfo for global value should have been created previously.");
+                    Debug.Assert(methInfo.HasValue, "MethodInfo for global value should have been created previously.");
 
                     _helper!.LoadQueryRuntime();
-                    _helper.Call(methInfo);
+                    _helper.LoadCancellationToken();
+                    _helper.Call(methInfo.Value.ToBeCalled);
                     _helper.Emit(OpCodes.Pop);
                 }
             }
@@ -362,7 +366,7 @@ namespace System.Xml.Xsl
             fldTypes = _module.DefineField(XmlQueryStaticData.TypesFieldName, typeof(Type[]));
 
             cctor = _module.DefineTypeInitializer();
-            _helper!.MethodBegin(cctor, null, false);
+            _helper!.MethodBegin(cctor, null, null, false);
 
             // s_data = new byte[s_initData.Length] { s_initData };
             _helper.LoadInteger(data.Length);

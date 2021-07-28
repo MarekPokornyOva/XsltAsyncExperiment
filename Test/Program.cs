@@ -18,16 +18,16 @@ namespace Test
 {
 	class Program
 	{
-		static void Main(string[] args)
+		static async Task Main(string[] args)
 		{
 			string transTemplate = @"<?xml version=""1.0"" encoding=""utf-8""?>
 <xsl:stylesheet version=""1.0"" exclude-result-prefixes=""xsl f"" xmlns:f=""XslHelperMethods"" xmlns:xsl=""http://www.w3.org/1999/XSL/Transform"">
 	<xsl:output method=""xml"" omit-xml-declaration=""yes"" />
 
 	<xsl:template match=""/"">
-		<xsl:value-of select=""f:ThreadSleep(2000)""/>
+<xsl:value-of select=""f:ThreadSleep(2000)""/>
 		<neco/>
-		<xsl:call-template name=""vic""/>
+<xsl:call-template name=""vic""/>
 	</xsl:template>
 
 	<xsl:template name=""vic"">
@@ -46,10 +46,14 @@ namespace Test
 			using (XmlReader xr = new XmlTextReader(tr))
 			using (StringWriter sw = new StringWriter())
 			{
+				CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
+				//cancellationTokenSource.Cancel();
+				//cancellationTokenSource.CancelAfter(1000);
 				XsltArgumentList xsltArgs = GetXsltArgumentList();
 				try
 				{
-					transform.Transform(xr, xsltArgs, sw);
+					ValueTask t=transform.TransformAsync(xr, xsltArgs, sw, cancellationTokenSource.Token);
+					await t;
 				}
 				catch (Exception ex)
 				{

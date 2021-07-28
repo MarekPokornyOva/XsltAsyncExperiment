@@ -10,6 +10,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Xml.XPath;
 using System.Xml.Xsl.Qil;
 using System.Xml.Xsl.Runtime;
@@ -260,34 +262,34 @@ namespace System.Xml.Xsl
         // Transform methods which take an IXPathNavigable
         //------------------------------------------------
 
-        public void Transform(IXPathNavigable input, XmlWriter results)
+        public ValueTask TransformAsync(IXPathNavigable input, XmlWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
-            Transform(input, (XsltArgumentList?)null, results, CreateDefaultResolver());
+            return TransformAsync(input, (XsltArgumentList?)null, results, CreateDefaultResolver(),cancellationToken);
         }
 
-        public void Transform(IXPathNavigable input, XsltArgumentList? arguments, XmlWriter results)
+        public ValueTask TransformAsync(IXPathNavigable input, XsltArgumentList? arguments, XmlWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
-            Transform(input, arguments, results, CreateDefaultResolver());
+            return TransformAsync(input, arguments, results, CreateDefaultResolver(),cancellationToken);
         }
 
-        public void Transform(IXPathNavigable input, XsltArgumentList? arguments, TextWriter results)
+        public async ValueTask TransformAsync(IXPathNavigable input, XsltArgumentList? arguments, TextWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
             using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
             {
-                Transform(input, arguments, writer, CreateDefaultResolver());
+                await TransformAsync(input, arguments, writer, CreateDefaultResolver(),cancellationToken);
                 writer.Close();
             }
         }
 
-        public void Transform(IXPathNavigable input, XsltArgumentList? arguments, Stream results)
+        public async ValueTask TransformAsync(IXPathNavigable input, XsltArgumentList? arguments, Stream results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
             using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
             {
-                Transform(input, arguments, writer, CreateDefaultResolver());
+                await TransformAsync(input, arguments, writer, CreateDefaultResolver(),cancellationToken);
                 writer.Close();
             }
         }
@@ -296,34 +298,34 @@ namespace System.Xml.Xsl
         // Transform methods which take an XmlReader
         //------------------------------------------------
 
-        public void Transform(XmlReader input, XmlWriter results)
+        public ValueTask TransformAsync(XmlReader input, XmlWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
-            Transform(input, (XsltArgumentList?)null, results, CreateDefaultResolver());
+            return TransformAsync(input, (XsltArgumentList?)null, results, CreateDefaultResolver(),cancellationToken);
         }
 
-        public void Transform(XmlReader input, XsltArgumentList? arguments, XmlWriter results)
+        public ValueTask TransformAsync(XmlReader input, XsltArgumentList? arguments, XmlWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
-            Transform(input, arguments, results, CreateDefaultResolver());
+            return TransformAsync(input, arguments, results, CreateDefaultResolver(),cancellationToken);
         }
 
-        public void Transform(XmlReader input, XsltArgumentList? arguments, TextWriter results)
+        public async ValueTask TransformAsync(XmlReader input, XsltArgumentList? arguments, TextWriter results, CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
             using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
             {
-                Transform(input, arguments, writer, CreateDefaultResolver());
+               await TransformAsync(input, arguments, writer, CreateDefaultResolver(),cancellationToken);
                 writer.Close();
             }
         }
 
-        public void Transform(XmlReader input, XsltArgumentList? arguments, Stream results)
+        public async ValueTask TransformAsync(XmlReader input, XsltArgumentList? arguments, Stream results,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
             using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
             {
-                Transform(input, arguments, writer, CreateDefaultResolver());
+                await TransformAsync(input, arguments, writer, CreateDefaultResolver(),cancellationToken);
                 writer.Close();
             }
         }
@@ -335,47 +337,47 @@ namespace System.Xml.Xsl
         // suppress the message.
         //------------------------------------------------
 
-        public void Transform(string inputUri, XmlWriter results)
+        public ValueTask TransformAsync(string inputUri, XmlWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(inputUri, results);
             using (XmlReader reader = XmlReader.Create(inputUri))
             {
-                Transform(reader, (XsltArgumentList?)null, results, CreateDefaultResolver());
+                return TransformAsync(reader, (XsltArgumentList?)null, results, CreateDefaultResolver(),cancellationToken);
             }
         }
 
-        public void Transform(string inputUri, XsltArgumentList? arguments, XmlWriter results)
+        public ValueTask TransformAsync(string inputUri, XsltArgumentList? arguments, XmlWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(inputUri, results);
             using (XmlReader reader = XmlReader.Create(inputUri))
             {
-                Transform(reader, arguments, results, CreateDefaultResolver());
+                return TransformAsync(reader, arguments, results, CreateDefaultResolver(),cancellationToken);
             }
         }
 
-        public void Transform(string inputUri, XsltArgumentList? arguments, TextWriter results)
-        {
-            CheckArguments(inputUri, results);
-            using (XmlReader reader = XmlReader.Create(inputUri))
-            using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
-            {
-                Transform(reader, arguments, writer, CreateDefaultResolver());
-                writer.Close();
-            }
-        }
-
-        public void Transform(string inputUri, XsltArgumentList? arguments, Stream results)
+        public async ValueTask TransformAsync(string inputUri, XsltArgumentList? arguments, TextWriter results,CancellationToken cancellationToken)
         {
             CheckArguments(inputUri, results);
             using (XmlReader reader = XmlReader.Create(inputUri))
             using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
             {
-                Transform(reader, arguments, writer, CreateDefaultResolver());
+                await TransformAsync(reader, arguments, writer, CreateDefaultResolver(),cancellationToken);
                 writer.Close();
             }
         }
 
-        public void Transform(string inputUri, string resultsFile)
+        public async ValueTask TransformAsync(string inputUri, XsltArgumentList? arguments, Stream results,CancellationToken cancellationToken)
+        {
+            CheckArguments(inputUri, results);
+            using (XmlReader reader = XmlReader.Create(inputUri))
+            using (XmlWriter writer = XmlWriter.Create(results, OutputSettings))
+            {
+                await TransformAsync(reader, arguments, writer, CreateDefaultResolver(),cancellationToken);
+                writer.Close();
+            }
+        }
+
+        public async ValueTask TransformAsync(string inputUri, string resultsFile,CancellationToken cancellationToken)
         {
             if (inputUri == null)
                 throw new ArgumentNullException(nameof(inputUri));
@@ -387,7 +389,7 @@ namespace System.Xml.Xsl
             using (XmlReader reader = XmlReader.Create(inputUri))
             using (XmlWriter writer = XmlWriter.Create(resultsFile, OutputSettings))
             {
-                Transform(reader, (XsltArgumentList?)null, writer, CreateDefaultResolver());
+                await TransformAsync(reader, (XsltArgumentList?)null, writer, CreateDefaultResolver(),cancellationToken);
                 writer.Close();
             }
         }
@@ -398,20 +400,20 @@ namespace System.Xml.Xsl
 
         // SxS: This method does not take any resource name and does not expose any resources to the caller.
         // It's OK to suppress the SxS warning.
-        public void Transform(XmlReader input, XsltArgumentList? arguments, XmlWriter results, XmlResolver? documentResolver)
+        public ValueTask TransformAsync(XmlReader input, XsltArgumentList? arguments, XmlWriter results, XmlResolver? documentResolver,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
             CheckCommand();
-            _command.Execute((object)input, documentResolver, arguments, results);
+            return _command.ExecuteAsync((object)input, documentResolver, arguments, results,cancellationToken);
         }
 
         // SxS: This method does not take any resource name and does not expose any resources to the caller.
         // It's OK to suppress the SxS warning.
-        public void Transform(IXPathNavigable input, XsltArgumentList? arguments, XmlWriter results, XmlResolver? documentResolver)
+        public ValueTask TransformAsync(IXPathNavigable input, XsltArgumentList? arguments, XmlWriter results, XmlResolver? documentResolver,CancellationToken cancellationToken)
         {
             CheckArguments(input, results);
             CheckCommand();
-            _command.Execute((object)input.CreateNavigator()!, documentResolver, arguments, results);
+            return _command.ExecuteAsync((object)input.CreateNavigator()!, documentResolver, arguments, results,cancellationToken);
         }
 
         //------------------------------------------------
@@ -474,9 +476,9 @@ namespace System.Xml.Xsl
             CompileQilToMsil(settings);
         }
 
-        private void Transform(string inputUri, XsltArgumentList? arguments, XmlWriter results, XmlResolver documentResolver)
+        private ValueTask TransformAsync(string inputUri, XsltArgumentList? arguments, XmlWriter results, XmlResolver documentResolver,CancellationToken cancellationToken)
         {
-            _command!.Execute(inputUri, documentResolver, arguments, results);
+            return _command!.ExecuteAsync(inputUri, documentResolver, arguments, results,cancellationToken);
         }
     }
 #endif // ! HIDE_XSL
