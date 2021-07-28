@@ -478,7 +478,7 @@ namespace System.Xml.Xsl.IlGen
     internal sealed class GenerateHelper
     {
         private MethodBase? _methInfo;
-        private ILGenerator? _ilgen;
+        private AsyncILGenerator? _ilgen;
         private FieldBuilder? _locXOut;
         private readonly XmlILModule _module;
         private readonly bool _isDebug;
@@ -524,7 +524,7 @@ namespace System.Xml.Xsl.IlGen
         public void MethodBegin(MethodBase methInfo, AsyncInfo? asyncInfo, ISourceLineInfo? sourceInfo, bool initWriters)
         {
             _methInfo = methInfo;
-            _ilgen = XmlILModule.DefineMethodBody(methInfo);
+            _ilgen = new AsyncILGenerator(XmlILModule.DefineMethodBody(methInfo));
             _lastSourceInfo = null;
             _asyncInfo=asyncInfo;
             if (asyncInfo!=null)
@@ -589,6 +589,8 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         public void MethodEnd()
         {
+         _ilgen!.Emit(OpCodes.Ldstr, $"{_methInfo.Name}:returns");
+         _ilgen.Emit(OpCodes.Call, typeof(Console).GetMethod(nameof(Console.WriteLine), BindingFlags.Public | BindingFlags.Static, new[] { typeof(string) })!);
          if (_asyncInfo!=null)
          {
             //builder.SetResult()
@@ -601,7 +603,7 @@ namespace System.Xml.Xsl.IlGen
             }
             else if (returnTypes.Length == 1)
             {
-               //pokud tam je hodnota, musim ji ulozit do local a pak ji poslat do AsyncValueTaskMethodBuilder.SetResult
+               //I must store a value if any into local and send it to AsyncValueTaskMethodBuilder.SetResult then.
                LocalBuilder resultLoc = DeclareLocal("resultTemp", returnTypes[0]);
                Emit(OpCodes.Stloc,resultLoc);
                Emit(OpCodes.Ldarg_0);
@@ -611,8 +613,24 @@ namespace System.Xml.Xsl.IlGen
             }
             else
                throw new InvalidProgramException();
+            _ilgen!.Emit(OpCodes.Ldstr, $"{_methInfo.Name}:result set");
+            _ilgen.Emit(OpCodes.Call, typeof(Console).GetMethod(nameof(Console.WriteLine), BindingFlags.Public | BindingFlags.Static, new[] { typeof(string) })!);
 
             MarkLabel(_methEnd);
+
+            //generate async continuations
+            _ilgen!.Insert(ilgen =>
+            {
+               int a = 0;
+               foreach (Label continuation in _asyncInfo.MoveNextParts)
+               {
+                  //if (_state==X) goto label
+                  ilgen.Emit(OpCodes.Ldarg_0);
+                  ilgen.Emit(OpCodes.Ldfld,_asyncInfo.StateFb);
+                  ilgen.Emit(OpCodes.Ldc_I4,a++);
+                  ilgen.Emit(OpCodes.Beq, continuation);
+               }
+            });
          }
             Emit(OpCodes.Ret);
 
@@ -627,6 +645,8 @@ namespace System.Xml.Xsl.IlGen
 
             if (_isDebug)
                 DebugEndScope();
+
+         _ilgen!.Bake();
         }
 
 
@@ -863,7 +883,7 @@ namespace System.Xml.Xsl.IlGen
                 bool isFirst = true;
                 string retType = "";
 
-                if (!(meth is MethodBuilder))
+                if (!(meth is MethodBuilder || (meth.IsConstructedGenericMethod && meth.GetType().Name=="MethodBuilderInstantiation"))) //how to recognize the MethodBuilderInstantiation more reliably
                 {
                     foreach (ParameterInfo paramInfo in meth.GetParameters())
                     {
@@ -911,18 +931,42 @@ namespace System.Xml.Xsl.IlGen
             LocalBuilder awaiterLb = DeclareLocal("awaiter",getAwaiterMi.ReturnType);
             FieldBuilder awaiterFb = _asyncInfo!.HelperTb.DefineField("_awaiter-"+Guid.NewGuid().ToString("N"),awaiterLb.LocalType,FieldAttributes.Private);
             //awaiter = ...GetAwaiter();
-            Emit(OpCodes.Stloc,valueTaskLb);
+            Emit(OpCodes.Stloc_S,valueTaskLb);
             Emit(OpCodes.Ldloca_S,valueTaskLb);
             Call(getAwaiterMi);
             Emit(OpCodes.Stloc_S,awaiterLb);
+            LoadThis();
+            Emit(OpCodes.Ldloc_S,awaiterLb);
+            Emit(OpCodes.Stfld,awaiterFb);
             //_state = ...;
             Emit(OpCodes.Ldarg_0);
             Emit(OpCodes.Ldc_I4,++_asyncInfo.MoveNextPart);
             Emit(OpCodes.Stfld,_asyncInfo.StateFb);
 
+            //if (awaiter.IsCompleted)
+            Label isCompleted = DefineLabel();
+            Emit(OpCodes.Ldloca_S,awaiterLb);
+            Call(awaiterLb.LocalType.GetProperty(nameof(ValueTaskAwaiter.IsCompleted))!.GetMethod!);
+			   Emit(OpCodes.Brtrue_S,isCompleted);
+            //_builder.AwaitUnsafeOnCompleted(ref valueTaskAwaiter,ref this);
+            Emit(OpCodes.Ldarg_0);
+            Emit(OpCodes.Ldflda,_asyncInfo.BuilderFb);
+            Emit(OpCodes.Ldloca_S,awaiterLb);
+            Emit(OpCodes.Ldarg_0);
+            Call(_asyncInfo.BuilderFb.FieldType.GetMethod(nameof(AsyncValueTaskMethodBuilder.AwaitUnsafeOnCompleted))!
+                .MakeGenericMethod(awaiterLb.LocalType,_asyncInfo.HelperTb));
+            //return;
+            Emit(OpCodes.Br,_methEnd);
+            //end if
+            MarkLabel(isCompleted);
+
+            _asyncInfo.MoveNextParts.Add(isCompleted);
+            Emit(OpCodes.Ldstr, $"{_methInfo.Name}:continues {_asyncInfo.MoveNextPart}");
+            Emit(OpCodes.Call, typeof(Console).GetMethod(nameof(Console.WriteLine), BindingFlags.Public | BindingFlags.Static, new[] { typeof(string) })!);
             //if (awaiterLb.LocalType!=typeof(ValueTaskAwaiter)) //leave it commented out - to call GetResult() even if it don't return any value - just for sure
             //awaiter.GetResult();
-            Emit(OpCodes.Ldloca_S,awaiterLb);
+            LoadThis();
+            Emit(OpCodes.Ldflda,awaiterFb);
             Emit(OpCodes.Call,getAwaiterMi.ReturnType.GetMethod(nameof(ValueTaskAwaiter.GetResult))!);
          }
         }
