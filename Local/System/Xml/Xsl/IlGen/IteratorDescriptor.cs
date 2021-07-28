@@ -27,6 +27,7 @@ namespace System.Xml.Xsl.IlGen
         Local,                              // Each value is stored as a local variable in the current method
         Current,                            // Each value is stored as an iterator's Current property
         Global,                             // Each value is stored as a global variable
+        Field
     };
 
 
@@ -103,6 +104,20 @@ namespace System.Xml.Xsl.IlGen
             return storage;
         }
 
+        public static StorageDescriptor Field(FieldBuilder loc, Type itemStorageType, bool isCached)
+        {
+            Debug.Assert(loc.FieldType == itemStorageType ||
+                         typeof(IList<>).MakeGenericType(itemStorageType).IsAssignableFrom(loc.FieldType),
+                         "Type " + itemStorageType + " does not match the local variable's type");
+
+            StorageDescriptor storage = default;
+            storage._location = ItemLocation.Field;
+            storage._locationObject = loc;
+            storage._itemStorageType = itemStorageType;
+            storage._isCached = isCached;
+            return storage;
+        }
+
         /// <summary>
         /// Create a StorageDescriptor for an item which is the Current item in an iterator.
         /// </summary>
@@ -114,6 +129,18 @@ namespace System.Xml.Xsl.IlGen
             StorageDescriptor storage = default;
             storage._location = ItemLocation.Current;
             storage._locationObject = new CurrentContext(locIter, currentMethod);
+            storage._itemStorageType = itemStorageType;
+            return storage;
+        }
+
+        public static StorageDescriptor Current(FieldBuilder locIter, MethodInfo currentMethod, Type itemStorageType)
+        {
+            Debug.Assert(currentMethod.ReturnType == itemStorageType,
+                         "Type " + itemStorageType + " does not match type of Current property.");
+
+            StorageDescriptor storage = default;
+            storage._location = ItemLocation.Current;
+            storage._locationObject = new CurrentContextField(locIter, currentMethod);
             storage._itemStorageType = itemStorageType;
             return storage;
         }
@@ -156,6 +183,11 @@ namespace System.Xml.Xsl.IlGen
             return Local(loc, _itemStorageType, _isCached);
         }
 
+        public StorageDescriptor ToField(FieldBuilder loc)
+        {
+            return Field(loc, _itemStorageType, _isCached);
+        }
+
         /// <summary>
         /// Create a StorageDescriptor which is the same as this one, except for the item storage type.
         /// </summary>
@@ -190,13 +222,18 @@ namespace System.Xml.Xsl.IlGen
             get { return _locationObject as LocalBuilder; }
         }
 
+        public FieldBuilder? FieldLocation
+        {
+            get { return _locationObject as FieldBuilder; }
+        }
+
         /// <summary>
         /// Return the "Current" location information (LocalBuilder and Current MethodInfo) that will store
         /// this iterator's helper class. The Current property on this iterator can be accessed to get the CurrentMethod.
         /// </summary>
-        public CurrentContext? CurrentLocation
+        public object? CurrentLocation
         {
-            get { return _locationObject as CurrentContext; }
+            get { return _locationObject; }
         }
 
         /// <summary>
@@ -239,6 +276,18 @@ namespace System.Xml.Xsl.IlGen
         public readonly MethodInfo CurrentMethod;
     }
 
+    internal sealed class CurrentContextField
+    {
+        public CurrentContextField(FieldBuilder local, MethodInfo currentMethod)
+        {
+            Local = local;
+            CurrentMethod = currentMethod;
+        }
+
+        public readonly FieldBuilder Local;
+        public readonly MethodInfo CurrentMethod;
+    }
+
     /// <summary>
     /// Iterators are joined together, are nested within each other, and reference each other.  This internal class
     /// contains detailed information about iteration next labels, caching, iterator item location, etc.
@@ -253,7 +302,7 @@ namespace System.Xml.Xsl.IlGen
         // Iteration
         private Label _lblNext;
         private bool _hasNext;
-        private LocalBuilder? _locPos;
+        private FieldBuilder? _locPos;
 
         // Branching
         private BranchingContext _brctxt;
@@ -378,7 +427,7 @@ namespace System.Xml.Xsl.IlGen
         /// This location is only defined on iterators, and then only if they might be
         /// referenced by a PositionOf operator.
         /// </summary>
-        public LocalBuilder? LocalPosition
+        public FieldBuilder? LocalPosition
         {
             get { return _locPos; }
             set { _locPos = value; }
@@ -418,34 +467,39 @@ namespace System.Xml.Xsl.IlGen
                 else
                 {
                     // int idx;
-                    LocalBuilder locIdx = _helper.DeclareLocal("$$$idx", typeof(int));
+                    FieldBuilder locIdx = _helper.DeclareLocalField("$$$idx", typeof(int));
                     Label lblNext;
 
                     // Make sure cache is not on the stack
                     EnsureNoStack("$$$cache");
 
                     // idx = -1;
+                    _helper.LoadThis();
                     _helper.LoadInteger(-1);
-                    _helper.Emit(OpCodes.Stloc, locIdx);
+                    _helper.Emit(OpCodes.Stfld, locIdx);
 
                     // LabelNext:
                     lblNext = _helper.DefineLabel();
                     _helper.MarkLabel(lblNext);
 
                     // idx++;
-                    _helper.Emit(OpCodes.Ldloc, locIdx);
+                    _helper.LoadThis();
+                    _helper.LoadThis();
+                    _helper.Emit(OpCodes.Ldfld, locIdx);
                     _helper.LoadInteger(1);
                     _helper.Emit(OpCodes.Add);
-                    _helper.Emit(OpCodes.Stloc, locIdx);
+                    _helper.Emit(OpCodes.Stfld, locIdx);
 
                     // if (idx >= cache.Count) goto LabelNextCtxt;
-                    _helper.Emit(OpCodes.Ldloc, locIdx);
+                    _helper.LoadThis();
+                    _helper.Emit(OpCodes.Ldfld, locIdx);
                     CacheCount();
                     _helper.Emit(OpCodes.Bge, GetLabelNext());
 
                     // item = cache[idx];
                     PushValue();
-                    _helper.Emit(OpCodes.Ldloc, locIdx);
+                    _helper.LoadThis();
+                    _helper.Emit(OpCodes.Ldfld, locIdx);
                     _helper.CallCacheItem(_storage.ItemStorageType);
 
                     SetIterator(lblNext, StorageDescriptor.Stack(_storage.ItemStorageType, false));
@@ -529,10 +583,25 @@ namespace System.Xml.Xsl.IlGen
                     _helper.Emit(OpCodes.Ldloc, _storage.LocalLocation!);
                     break;
 
+                case ItemLocation.Field:
+                    _helper.LoadThis();
+                    _helper.Emit(OpCodes.Ldfld, _storage.FieldLocation!);
+                    break;
+
                 case ItemLocation.Current:
-                    CurrentContext currentContext = _storage.CurrentLocation!;
-                    _helper.Emit(OpCodes.Ldloca, currentContext.Local);
-                    _helper.Call(currentContext.CurrentMethod);
+                    object cc = _storage.CurrentLocation!;
+               if (cc is CurrentContextField ccf)
+               {
+                  _helper.LoadThis();
+                  _helper.Emit(OpCodes.Ldflda,ccf.Local);
+                  _helper.Call(ccf.CurrentMethod);
+               }
+               else
+               {
+                  CurrentContext currentContext = (CurrentContext)cc;
+                  _helper.Emit(OpCodes.Ldloca,currentContext.Local);
+                  _helper.Call(currentContext.CurrentMethod);
+               }
                     break;
 
                 default:
@@ -555,6 +624,7 @@ namespace System.Xml.Xsl.IlGen
                 case ItemLocation.Parameter:
                 case ItemLocation.Local:
                 case ItemLocation.Current:
+            case ItemLocation.Field:
                     PushValue();
                     break;
 
@@ -590,9 +660,9 @@ namespace System.Xml.Xsl.IlGen
             if (_storage.Location != ItemLocation.Local)
             {
                 if (_storage.IsCached)
-                    EnsureLocal(_helper.DeclareLocal(locName, typeof(IList<>).MakeGenericType(_storage.ItemStorageType)));
+                    EnsureLocal(_helper.DeclareLocalField(locName, typeof(IList<>).MakeGenericType(_storage.ItemStorageType)));
                 else
-                    EnsureLocal(_helper.DeclareLocal(locName, _storage.ItemStorageType));
+                    EnsureLocal(_helper.DeclareLocalField(locName, _storage.ItemStorageType));
             }
         }
 
@@ -607,6 +677,21 @@ namespace System.Xml.Xsl.IlGen
                 EnsureStack();
                 _helper.Emit(OpCodes.Stloc, bldr);
                 _storage = _storage.ToLocal(bldr);
+            }
+        }
+
+        public void EnsureLocal(FieldBuilder bldr)
+        {
+            if (_storage.FieldLocation != bldr)
+            {
+                // Push value onto stack and then save to bldr
+                EnsureStack();
+                _storage = _storage.ToField(bldr);
+            LocalBuilder lb = _helper.DeclareLocal("~temp~"+bldr.Name,bldr.FieldType);
+            _helper.Emit(OpCodes.Stloc,lb);
+            _helper.LoadThis();
+            _helper.Emit(OpCodes.Ldloc,lb);
+            _helper.Emit(OpCodes.Stfld, bldr);
             }
         }
 
@@ -655,6 +740,12 @@ namespace System.Xml.Xsl.IlGen
         /// Ensure that the iterator's items are not cached and that the current item is saved to the specified local variable.
         /// </summary>
         public void EnsureLocalNoCache(LocalBuilder bldr)
+        {
+            EnsureNoCache();
+            EnsureLocal(bldr);
+        }
+
+        public void EnsureLocalNoCache(FieldBuilder bldr)
         {
             EnsureNoCache();
             EnsureLocal(bldr);

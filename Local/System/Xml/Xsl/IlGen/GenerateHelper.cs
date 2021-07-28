@@ -479,7 +479,7 @@ namespace System.Xml.Xsl.IlGen
     {
         private MethodBase? _methInfo;
         private ILGenerator? _ilgen;
-        private LocalBuilder? _locXOut;
+        private FieldBuilder? _locXOut;
         private readonly XmlILModule _module;
         private readonly bool _isDebug;
         private bool _initWriters;
@@ -577,9 +577,10 @@ namespace System.Xml.Xsl.IlGen
             if (initWriters)
             {
                 EnsureWriter();
+                LoadThis();
                 LoadQueryRuntime();
                 Call(XmlILMethods.GetOutput);
-                Emit(OpCodes.Stloc, _locXOut);
+                Emit(OpCodes.Stfld, _locXOut);
             }
         }
 
@@ -600,9 +601,9 @@ namespace System.Xml.Xsl.IlGen
             }
             else if (returnTypes.Length == 1)
             {
-               //I must store a value if any into local and send it to AsyncValueTaskMethodBuilder.SetResult then.
+               //pokud tam je hodnota, musim ji ulozit do local a pak ji poslat do AsyncValueTaskMethodBuilder.SetResult
                LocalBuilder resultLoc = DeclareLocal("resultTemp", returnTypes[0]);
-               Emit(OpCodes.Stloc, resultLoc);
+               Emit(OpCodes.Stloc,resultLoc);
                Emit(OpCodes.Ldarg_0);
                Emit(OpCodes.Ldflda, _asyncInfo.BuilderFb);
                Emit(OpCodes.Ldloc, resultLoc);
@@ -703,6 +704,12 @@ namespace System.Xml.Xsl.IlGen
             return locBldr;
         }
 
+        public FieldBuilder DeclareLocalField(string name,Type type)
+         => ((TypeBuilder)_methInfo!.DeclaringType!).DefineField("~local~"+name,type,FieldAttributes.Private);
+
+      public void LoadThis()
+         => Emit(OpCodes.Ldarg_0);
+
         public void LoadQueryRuntime()
         {
             Emit(OpCodes.Ldarg_0);
@@ -729,7 +736,8 @@ namespace System.Xml.Xsl.IlGen
 
         public void LoadQueryOutput()
         {
-            Emit(OpCodes.Ldloc, _locXOut!);
+         Emit(OpCodes.Ldarg_0);
+            Emit(OpCodes.Ldfld, _locXOut!);
         }
 
 
@@ -901,7 +909,7 @@ namespace System.Xml.Xsl.IlGen
             MethodInfo getAwaiterMi = retType.GetMethod(nameof(ValueTask.GetAwaiter))!;
             LocalBuilder valueTaskLb = DeclareLocal("valTask",retType);
             LocalBuilder awaiterLb = DeclareLocal("awaiter",getAwaiterMi.ReturnType);
-            FieldBuilder awaiterFb = _asyncInfo!.HelperTb.DefineField("_awaiter"+Guid.NewGuid(),awaiterLb.LocalType,FieldAttributes.Private);
+            FieldBuilder awaiterFb = _asyncInfo!.HelperTb.DefineField("_awaiter-"+Guid.NewGuid().ToString("N"),awaiterLb.LocalType,FieldAttributes.Private);
             //awaiter = ...GetAwaiter();
             Emit(OpCodes.Stloc,valueTaskLb);
             Emit(OpCodes.Ldloca_S,valueTaskLb);
@@ -1099,14 +1107,16 @@ namespace System.Xml.Xsl.IlGen
             EnsureWriter();
             LoadQueryRuntime();
             Emit(OpCodes.Ldstr, baseUri);
-            Emit(OpCodes.Ldloca, _locXOut);
+            LoadThis();
+            Emit(OpCodes.Ldflda, _locXOut);
             Call(XmlILMethods.StartRtfConstr);
         }
 
         public void CallEndRtfConstruction()
         {
             LoadQueryRuntime();
-            Emit(OpCodes.Ldloca, _locXOut!);
+            LoadThis();
+            Emit(OpCodes.Ldflda, _locXOut!);
             Call(XmlILMethods.EndRtfConstr);
         }
 
@@ -1114,14 +1124,16 @@ namespace System.Xml.Xsl.IlGen
         {
             EnsureWriter();
             LoadQueryRuntime();
-            Emit(OpCodes.Ldloca, _locXOut);
+            LoadThis();
+            Emit(OpCodes.Ldflda, _locXOut);
             Call(XmlILMethods.StartSeqConstr);
         }
 
         public void CallEndSequenceConstruction()
         {
             LoadQueryRuntime();
-            Emit(OpCodes.Ldloca, _locXOut!);
+            LoadThis();
+            Emit(OpCodes.Ldflda, _locXOut!);
             Call(XmlILMethods.EndSeqConstr);
         }
 
@@ -1194,7 +1206,7 @@ namespace System.Xml.Xsl.IlGen
             // If write variable has not yet been initialized, do it now
             if (!_initWriters)
             {
-                _locXOut = DeclareLocal("$$$xwrtChk", typeof(XmlQueryOutput));
+                _locXOut = DeclareLocalField("$$$xwrtChk", typeof(XmlQueryOutput));
                 _initWriters = true;
             }
 
@@ -1828,5 +1840,30 @@ namespace System.Xml.Xsl.IlGen
                 MarkSequencePoint(SourceLineInfo.NoSource);
             }
         }
+
+        public StackValueInfo SaveStackValue(Type type)
+        {
+         LocalBuilder lb= _ilgen!.DeclareLocal(type);
+         _ilgen.Emit(OpCodes.Stloc,lb);
+         FieldBuilder fb = ((TypeBuilder)_methInfo!.DeclaringType!).DefineField("~stack-"+Guid.NewGuid().ToString("N"),type,FieldAttributes.Private);
+         _ilgen.Emit(OpCodes.Ldarg_0);
+         _ilgen.Emit(OpCodes.Ldloc,lb);
+         _ilgen.Emit(OpCodes.Stfld,fb);
+         return new StackValueInfo { Fb=fb };
+        }
+
+        public void LoadStackValues(params StackValueInfo[] infos)
+        {
+            foreach (StackValueInfo info in infos)
+            {
+            _ilgen!.Emit(OpCodes.Ldarg_0);
+            _ilgen.Emit(OpCodes.Ldfld,info.Fb);
+            }
+        }
+    }
+
+    public struct StackValueInfo
+    {
+      internal FieldBuilder Fb;
     }
 }

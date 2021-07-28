@@ -15,6 +15,7 @@ using System.Xml.Xsl;
 using System.Xml.Xsl.Qil;
 using System.Xml.Xsl.Runtime;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 
 namespace System.Xml.Xsl.IlGen
 {
@@ -176,13 +177,15 @@ namespace System.Xml.Xsl.IlGen
 
                 if (iter.Binding != null)
                 {
+                    // Compute value of global value
+                    NestedVisitEnsureStack(iter.Binding, GetItemStorageType(iter), isCached);
+               LocalBuilder temp = _helper.DeclareLocal("globVal-"+Guid.NewGuid().ToString("N"), GetItemStorageType(iter));
+               _helper.Emit(OpCodes.Stloc,temp);
+
                     // runtime.SetGlobalValue(idxValue, (object) value);
                     _helper.LoadQueryRuntime();
                     _helper.LoadInteger(idxValue);
-
-                    // Compute value of global value
-                    NestedVisitEnsureStack(iter.Binding, GetItemStorageType(iter), isCached);
-
+               _helper.Emit(OpCodes.Ldloc,temp);
                     _helper.CallSetGlobalValue(GetStorageType(iter));
                 }
                 else
@@ -1156,7 +1159,7 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         private void Sequence(QilList ndSeq)
         {
-            LocalBuilder locIdx, locList;
+            FieldBuilder locIdx, locList;
             Label lblStart, lblNext, lblOnEnd = default;
             Label[] arrSwitchLabels;
             int i;
@@ -1187,8 +1190,8 @@ namespace System.Xml.Xsl.IlGen
             {
                 // Type itemList;
                 // int idxList;
-                locList = _helper.DeclareLocal("$$$itemList", itemStorageType);
-                locIdx = _helper.DeclareLocal("$$$idxList", typeof(int));
+                locList = _helper.DeclareLocalField("$$$itemList", itemStorageType);
+                locIdx = _helper.DeclareLocalField("$$$idxList", typeof(int));
 
                 arrSwitchLabels = new Label[ndSeq.Count];
                 lblStart = _helper.DefineLabel();
@@ -1207,8 +1210,9 @@ namespace System.Xml.Xsl.IlGen
                         lblOnEnd = _helper.DefineLabel();
 
                     // idxList = [i];
+                    _helper.LoadThis();
                     _helper.LoadInteger(i);
-                    _helper.Emit(OpCodes.Stloc, locIdx);
+                    _helper.Emit(OpCodes.Stfld, locIdx);
 
                     // Generate nested iterator's code
                     NestedVisit(ndSeq[i], lblOnEnd);
@@ -1233,13 +1237,14 @@ namespace System.Xml.Xsl.IlGen
                 //   case 0: goto LabelNext1;
                 //   ...
                 //   case N-1: goto LabelNext[N];
-                _helper.Emit(OpCodes.Ldloc, locIdx);
+                _helper.LoadThis();
+                _helper.Emit(OpCodes.Ldfld, locIdx);
                 _helper.Emit(OpCodes.Switch, arrSwitchLabels);
 
                 // LabelStart:
                 _helper.MarkLabel(lblStart);
 
-                _iterCurr.SetIterator(lblNext, StorageDescriptor.Local(locList, itemStorageType, false));
+                _iterCurr.SetIterator(lblNext, StorageDescriptor.Field(locList, itemStorageType, false));
             }
         }
 
@@ -2136,7 +2141,7 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         private void StartForBinding(QilIterator ndFor, OptimizerPatterns patt)
         {
-            LocalBuilder? locPos = null;
+            FieldBuilder? locPos = null;
             Debug.Assert(ndFor.XmlType!.IsSingleton);
 
             // For expression iterator will be unnested as part of parent iterator
@@ -2148,9 +2153,10 @@ namespace System.Xml.Xsl.IlGen
             if (patt.MatchesPattern(OptimizerPatternName.IsPositional))
             {
                 // Need to track loop index so initialize it to 0 before starting loop
-                locPos = _helper.DeclareLocal("$$$pos", typeof(int));
+                locPos = _helper.DeclareLocalField("$$$pos", typeof(int));
+                _helper.LoadThis();
                 _helper.Emit(OpCodes.Ldc_I4_0);
-                _helper.Emit(OpCodes.Stloc, locPos);
+                _helper.Emit(OpCodes.Stfld, locPos);
             }
 
             // Allow base internal class to dispatch based on QilExpression node type
@@ -2174,15 +2180,18 @@ namespace System.Xml.Xsl.IlGen
             if (patt.MatchesPattern(OptimizerPatternName.IsPositional))
             {
                 // Increment position
-                _helper.Emit(OpCodes.Ldloc, locPos!);
+                _helper.LoadThis();
+                _helper.LoadThis();
+                _helper.Emit(OpCodes.Ldfld, locPos!);
                 _helper.Emit(OpCodes.Ldc_I4_1);
                 _helper.Emit(OpCodes.Add);
-                _helper.Emit(OpCodes.Stloc, locPos!);
+                _helper.Emit(OpCodes.Stfld, locPos!);
 
                 if (patt.MatchesPattern(OptimizerPatternName.MaxPosition))
                 {
                     // Short-circuit rest of loop if max position has already been reached
-                    _helper.Emit(OpCodes.Ldloc, locPos!);
+                    _helper.LoadThis();
+                    _helper.Emit(OpCodes.Ldfld, locPos!);
                     _helper.LoadInteger((int)patt.GetArgument(OptimizerPatternArgument.MaxPosition));
                     _helper.Emit(OpCodes.Bgt, _iterCurr.ParentIterator!.GetLabelNext());
                 }
@@ -2243,12 +2252,12 @@ namespace System.Xml.Xsl.IlGen
         protected override QilNode VisitPositionOf(QilUnary ndPos)
         {
             QilIterator ndIter = (ndPos.Child as QilIterator)!;
-            LocalBuilder locPos;
+            FieldBuilder locPos;
             Debug.Assert(ndIter.NodeType == QilNodeType.For);
 
             locPos = XmlILAnnotation.Write(ndIter).CachedIteratorDescriptor!.LocalPosition!;
             Debug.Assert(locPos != null);
-            _iterCurr.Storage = StorageDescriptor.Local(locPos, typeof(int), false);
+            _iterCurr.Storage = StorageDescriptor.Field(locPos, typeof(int), false);
 
             return ndPos;
         }
@@ -2551,17 +2560,22 @@ namespace System.Xml.Xsl.IlGen
             Debug.Assert(!XmlILConstructInfo.Read(ndInvoke).PushToWriterFirst || useWriter);
 
             // Push XmlQueryRuntime onto the stack as the first parameter
+         StackValueInfo[] svis = new StackValueInfo[ndInvoke.Arguments.Count+2];
             _helper.LoadQueryRuntime();
+         svis[0] = _helper.SaveStackValue(typeof(object));
          _helper.LoadCancellationToken();
+         svis[1] = _helper.SaveStackValue(typeof(CancellationToken));
 
-            // Generate code to push each Invoke argument onto the stack
-            for (int iArg = 0; iArg < ndInvoke.Arguments.Count; iArg++)
+         // Generate code to push each Invoke argument onto the stack
+         for (int iArg = 0; iArg < ndInvoke.Arguments.Count; iArg++)
             {
                 QilNode ndActualArg = ndInvoke.Arguments[iArg];
                 QilNode ndFormalArg = ndInvoke.Function.Arguments[iArg];
                 NestedVisitEnsureStack(ndActualArg, GetItemStorageType(ndFormalArg), !ndFormalArg.XmlType!.IsSingleton);
+                svis[iArg+2]=_helper.SaveStackValue(GetItemStorageType(ndFormalArg));
             }
 
+         _helper.LoadStackValues(svis);
             // Check whether this call should compiled using the .tailcall instruction
             if (OptimizerPatterns.Read(ndInvoke).MatchesPattern(OptimizerPatternName.TailCall))
                 _helper.TailCall(methInfo);
@@ -3557,7 +3571,7 @@ namespace System.Xml.Xsl.IlGen
         /// </summary>
         protected override QilNode VisitXsltInvokeLateBound(QilInvokeLateBound ndInvoke)
         {
-            LocalBuilder locArgs = _helper.DeclareLocal("$$$args", typeof(IList<XPathItem>[]));
+            FieldBuilder locArgs = _helper.DeclareLocalField("$$$args", typeof(IList<XPathItem>[]));
             QilName ndName = (QilName)ndInvoke.Name;
             Debug.Assert(XmlILConstructInfo.Read(ndInvoke).ConstructMethod != XmlILConstructMethod.Writer);
 
@@ -3567,9 +3581,10 @@ namespace System.Xml.Xsl.IlGen
             _helper.Emit(OpCodes.Ldstr, ndName.NamespaceUri);
 
             // args = new IList<XPathItem>[argCount];
+            _helper.LoadThis();
             _helper.LoadInteger(ndInvoke.Arguments.Count);
             _helper.Emit(OpCodes.Newarr, typeof(IList<XPathItem>));
-            _helper.Emit(OpCodes.Stloc, locArgs);
+            _helper.Emit(OpCodes.Stfld, locArgs);
 
             for (int iArg = 0; iArg < ndInvoke.Arguments.Count; iArg++)
             {
@@ -3578,7 +3593,8 @@ namespace System.Xml.Xsl.IlGen
                 // args[0] = arg0;
                 // ...
                 // args[N] = argN;
-                _helper.Emit(OpCodes.Ldloc, locArgs);
+                _helper.LoadThis();
+                _helper.Emit(OpCodes.Ldfld, locArgs);
                 _helper.LoadInteger(iArg);
                 _helper.Emit(OpCodes.Ldelema, typeof(IList<XPathItem>));
 
@@ -3588,7 +3604,8 @@ namespace System.Xml.Xsl.IlGen
                 _helper.Emit(OpCodes.Stobj, typeof(IList<XPathItem>));
             }
 
-            _helper.Emit(OpCodes.Ldloc, locArgs);
+            _helper.LoadThis();
+            _helper.Emit(OpCodes.Ldfld, locArgs);
 
             _helper.Call(XmlILMethods.InvokeXsltLate);
 
@@ -3921,10 +3938,11 @@ namespace System.Xml.Xsl.IlGen
         private void CreateSimpleIterator(QilNode ndCtxt, string iterName, Type iterType, MethodInfo methCreate, MethodInfo methNext, MethodInfo methCurrent)
         {
             // Iterator iter;
-            LocalBuilder locIter = _helper.DeclareLocal(iterName, iterType);
+            FieldBuilder locIter = _helper.DeclareLocalField(iterName, iterType);
 
             // iter.Create(navCtxt);
-            _helper.Emit(OpCodes.Ldloca, locIter);
+            _helper.LoadThis();
+            _helper.Emit(OpCodes.Ldflda, locIter);
             NestedVisitEnsureStack(ndCtxt);
             _helper.Call(methCreate);
 
@@ -4024,6 +4042,23 @@ namespace System.Xml.Xsl.IlGen
 
             // if (!iter.MoveNext()) goto LabelNextCtxt;
             _helper.Emit(OpCodes.Ldloca, locIter);
+            _helper.Call(methNext);
+            _helper.Emit(OpCodes.Brfalse, _iterCurr.GetLabelNext());
+
+            _iterCurr.SetIterator(lblNext, StorageDescriptor.Current(locIter, methCurrent, itemStorageType));
+        }
+
+        private void GenerateSimpleIterator(Type itemStorageType, FieldBuilder locIter, MethodInfo methNext, MethodInfo methCurrent)
+        {
+            Label lblNext;
+
+            // LabelNext:
+            lblNext = _helper.DefineLabel();
+            _helper.MarkLabel(lblNext);
+
+            // if (!iter.MoveNext()) goto LabelNextCtxt;
+            _helper.LoadThis();
+            _helper.Emit(OpCodes.Ldflda, locIter);
             _helper.Call(methNext);
             _helper.Emit(OpCodes.Brfalse, _iterCurr.GetLabelNext());
 
@@ -4836,7 +4871,7 @@ namespace System.Xml.Xsl.IlGen
         {
             Debug.Assert(!XmlILConstructInfo.Read(nd).PushToWriterLast);
             bool cachesResult = CachesResult(nd);
-            LocalBuilder locCache;
+            FieldBuilder locCache;
             Label lblOnEnd = _helper.DefineLabel();
             Type cacheType;
             XmlILStorageMethods methods;
@@ -4870,8 +4905,10 @@ namespace System.Xml.Xsl.IlGen
 
             // XmlQuerySequence<T> cache;
             methods = XmlILMethods.StorageMethods[cacheType];
-            locCache = _helper.DeclareLocal("$$$cache", methods.SeqType);
-            _helper.Emit(OpCodes.Ldloc, locCache);
+            locCache = _helper.DeclareLocalField("$$$cache", methods.SeqType);
+            _helper.LoadThis();
+            _helper.LoadThis();
+            _helper.Emit(OpCodes.Ldfld, locCache);
 
             // Special case non-navigator singletons to use overload of CreateOrReuse
             if (nd.XmlType!.IsSingleton)
@@ -4879,15 +4916,14 @@ namespace System.Xml.Xsl.IlGen
                 // cache = XmlQuerySequence.CreateOrReuse(cache, item);
                 NestedVisitEnsureStack(nd, cacheType, false);
                 _helper.Call(methods.SeqReuseSgl);
-                _helper.Emit(OpCodes.Stloc, locCache);
+                _helper.Emit(OpCodes.Stfld, locCache);
             }
             else
             {
                 // XmlQuerySequence<T> cache;
                 // cache = XmlQuerySequence.CreateOrReuse(cache);
                 _helper.Call(methods.SeqReuse);
-                _helper.Emit(OpCodes.Stloc, locCache);
-                _helper.Emit(OpCodes.Ldloc, locCache);
+                _helper.Emit(OpCodes.Stfld, locCache);
 
                 StartNestedIterator(nd, lblOnEnd);
 
@@ -4899,19 +4935,20 @@ namespace System.Xml.Xsl.IlGen
                 // cache.Add(item);
                 _iterCurr.EnsureItemStorageType(nd.XmlType, cacheType);
                 _iterCurr.EnsureStackNoCache();
+            LocalBuilder lb = _helper.DeclareLocal("cacheTemp-"+Guid.NewGuid().ToString("N"),cacheType);
+            _helper.Emit(OpCodes.Stloc, lb);
+            _helper.LoadThis();
+            _helper.Emit(OpCodes.Ldfld, locCache);
+            _helper.Emit(OpCodes.Ldloc, lb);
                 _helper.Call(methods.SeqAdd);
-                _helper.Emit(OpCodes.Ldloc, locCache);
 
                 // }
                 _iterCurr.LoopToEnd(lblOnEnd);
 
                 EndNestedIterator(nd);
-
-                // Remove cache reference from stack
-                _helper.Emit(OpCodes.Pop);
             }
 
-            _iterCurr.Storage = StorageDescriptor.Local(locCache, itemStorageType, true);
+            _iterCurr.Storage = StorageDescriptor.Field(locCache, itemStorageType, true);
         }
 
         /// <summary>
