@@ -2954,10 +2954,13 @@ namespace System.Xml.Xsl.IlGen
             if (!callChk)
                 BeforeStartChecks(ndText);
 
-            _helper.LoadQueryOutput();
-
             // Push string value of text onto IL stack
             NestedVisitEnsureStack(ndText.Child);
+            LocalBuilder lb=_helper.DeclareLocal("string-"+Guid.NewGuid().ToString("N"),typeof(string));
+            _helper.Emit(OpCodes.Stloc,lb);
+
+            _helper.LoadQueryOutput();
+            _helper.Emit(OpCodes.Ldloc,lb);
 
             // Write out text in different contexts (within attribute, within element, within comment, etc.)
             switch (info.InitialStates)
@@ -3575,11 +3578,6 @@ namespace System.Xml.Xsl.IlGen
             QilName ndName = (QilName)ndInvoke.Name;
             Debug.Assert(XmlILConstructInfo.Read(ndInvoke).ConstructMethod != XmlILConstructMethod.Writer);
 
-            // runtime.ExternalContext.InvokeXsltLateBoundFunction(name, ns, args);
-            _helper.LoadQueryContext();
-            _helper.Emit(OpCodes.Ldstr, ndName.LocalName);
-            _helper.Emit(OpCodes.Ldstr, ndName.NamespaceUri);
-
             // args = new IList<XPathItem>[argCount];
             _helper.LoadThis();
             _helper.LoadInteger(ndInvoke.Arguments.Count);
@@ -3604,8 +3602,13 @@ namespace System.Xml.Xsl.IlGen
                 _helper.Emit(OpCodes.Stobj, typeof(IList<XPathItem>));
             }
 
+            // runtime.ExternalContext.InvokeXsltLateBoundFunction(name, ns, args);
+            _helper.LoadQueryContext();
+            _helper.Emit(OpCodes.Ldstr, ndName.LocalName);
+            _helper.Emit(OpCodes.Ldstr, ndName.NamespaceUri);
             _helper.LoadThis();
             _helper.Emit(OpCodes.Ldfld, locArgs);
+         _helper.LoadCancellationToken();
 
             _helper.Call(XmlILMethods.InvokeXsltLate);
 
@@ -4924,6 +4927,8 @@ namespace System.Xml.Xsl.IlGen
                 // cache = XmlQuerySequence.CreateOrReuse(cache);
                 _helper.Call(methods.SeqReuse);
                 _helper.Emit(OpCodes.Stfld, locCache);
+                //_helper.LoadThis();
+                //_helper.Emit(OpCodes.Ldfld, locCache);
 
                 StartNestedIterator(nd, lblOnEnd);
 
@@ -4941,11 +4946,16 @@ namespace System.Xml.Xsl.IlGen
             _helper.Emit(OpCodes.Ldfld, locCache);
             _helper.Emit(OpCodes.Ldloc, lb);
                 _helper.Call(methods.SeqAdd);
+                //_helper.LoadThis();
+                //_helper.Emit(OpCodes.Ldfld, locCache);
 
                 // }
                 _iterCurr.LoopToEnd(lblOnEnd);
 
                 EndNestedIterator(nd);
+
+                // Remove cache reference from stack
+                //_helper.Emit(OpCodes.Pop);
             }
 
             _iterCurr.Storage = StorageDescriptor.Field(locCache, itemStorageType, true);

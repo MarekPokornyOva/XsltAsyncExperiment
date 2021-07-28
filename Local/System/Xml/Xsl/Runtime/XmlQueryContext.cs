@@ -18,6 +18,10 @@ using System.Xml.Xsl.Xslt;
 namespace System.Xml.Xsl.Runtime
 {
     using Reflection;
+    using System.Runtime.CompilerServices;
+    using System.Runtime.InteropServices;
+    using System.Threading;
+    using System.Threading.Tasks;
 
     /// <summary>
     /// The context of a query consists of all user-provided information which influences the operation of the
@@ -254,7 +258,7 @@ namespace System.Xml.Xsl.Runtime
         /// passing "args" as arguments.
         /// </summary>
         [RequiresUnreferencedCode(Scripts.ExtensionFunctionCannotBeStaticallyAnalyzed)]
-        public IList<XPathItem> InvokeXsltLateBoundFunction(string name, string namespaceUri, IList<XPathItem>[] args)
+        public async ValueTask<IList<XPathItem>> InvokeXsltLateBoundFunction(string name, string namespaceUri, IList<XPathItem>[] args, CancellationToken cancellationToken)
         {
             object instance;
             object[] objActualArgs;
@@ -275,7 +279,7 @@ namespace System.Xml.Xsl.Runtime
             XmlExtensionFunction extFunc = _extFuncsLate.Bind(name, namespaceUri, args.Length, instance.GetType(), XmlQueryRuntime.LateBoundFlags);
 
             // Create array which will contain the actual arguments
-            objActualArgs = new object[args.Length];
+            objActualArgs = new object[args.Length+(extFunc.AddCancellationTokenOnInvoke?1:0)];
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -310,9 +314,39 @@ namespace System.Xml.Xsl.Runtime
                 if (xmlTypeFormalArg.TypeCode == XmlTypeCode.Item || !clrTypeFormalArg.IsAssignableFrom(objActualArgs[i].GetType()))
                     objActualArgs[i] = _runtime.ChangeTypeXsltArgument(xmlTypeFormalArg, objActualArgs[i], clrTypeFormalArg);
             }
+            if (extFunc.AddCancellationTokenOnInvoke)
+               objActualArgs[^1]=cancellationToken;
 
             // 1. Invoke the late bound method
             objRet = extFunc.Invoke(instance, objActualArgs);
+            Type objRetType = objRet.GetType();
+            if (typeof(Task).IsAssignableFrom(objRetType))
+            {
+               await (Task)objRet;
+               object awaiter = objRet.GetType().GetMethod(nameof(Task.GetAwaiter)).Invoke(objRet, Array.Empty<object>());
+               objRet=awaiter.GetType().GetMethod(nameof(TaskAwaiter.GetResult)).Invoke(awaiter,Array.Empty<object>());
+            }
+            else if (typeof(ValueTask)==objRetType)
+            {
+               await (ValueTask)objRet;
+               object awaiter = objRet.GetType().GetMethod(nameof(ValueTask.GetAwaiter)).Invoke(objRet, Array.Empty<object>());
+               objRet=awaiter.GetType().GetMethod(nameof(ValueTaskAwaiter.GetResult)).Invoke(awaiter,Array.Empty<object>());
+            }
+            else if (objRetType.IsConstructedGenericType && objRetType.GetGenericTypeDefinition() == typeof(ValueTask<>))
+            {
+               object awaiter = objRet.GetType().GetMethod(nameof(ValueTask.GetAwaiter)).Invoke(objRet, Array.Empty<object>());
+
+               if (!(bool)awaiter.GetType().GetProperty("IsCompleted").GetMethod.Invoke(awaiter, Array.Empty<object>()))
+               {
+                  AwaitParametrizedValueTaskHelper helper = default(AwaitParametrizedValueTaskHelper);
+                  helper._awaiter = (ICriticalNotifyCompletion)awaiter;
+                  helper._state = -1;
+                  helper.MoveNext();
+                  await helper._builder.Task;
+               }
+
+               objRet=awaiter.GetType().GetMethod(nameof(ValueTaskAwaiter.GetResult)).Invoke(awaiter,Array.Empty<object>());
+            }
 
             // 2. Convert to IList<XPathItem>
             if (objRet == null && extFunc.ClrReturnType == XsltConvert.VoidType)
@@ -321,6 +355,30 @@ namespace System.Xml.Xsl.Runtime
             return (IList<XPathItem>)_runtime.ChangeTypeXsltResult(XmlQueryTypeFactory.ItemS, objRet);
         }
 
+        [StructLayout(LayoutKind.Auto, CharSet = CharSet.Auto)]
+        struct AwaitParametrizedValueTaskHelper : IAsyncStateMachine
+        {
+         internal AsyncValueTaskMethodBuilder _builder;
+         internal ICriticalNotifyCompletion _awaiter;
+         internal int _state;
+
+         public void MoveNext()
+         {            
+            if (_state==-1)
+            {
+               _state = 0;
+               _builder.AwaitUnsafeOnCompleted(ref _awaiter,ref this);
+               return;
+            }
+            else
+               _builder.SetResult();
+         }
+
+         public void SetStateMachine(IAsyncStateMachine stateMachine)
+         {
+            _builder.SetStateMachine(stateMachine);
+         }
+        }
 
         //-----------------------------------------------
         // Event

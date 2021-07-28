@@ -25,7 +25,7 @@ namespace Test
 	<xsl:output method=""xml"" omit-xml-declaration=""yes"" />
 
 	<xsl:template match=""/"">
-<xsl:value-of select=""f:ThreadSleep(2000)""/>
+<xsl:value-of select=""f:ThreadSleepAsync(2000)""/>
 		<neco/>
 <xsl:call-template name=""vic""/>
 	</xsl:template>

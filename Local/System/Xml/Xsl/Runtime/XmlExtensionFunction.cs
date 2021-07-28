@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Globalization;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 
 namespace System.Xml.Xsl.Runtime
 {
@@ -161,6 +162,8 @@ namespace System.Xml.Xsl.Runtime
             get { return _retXmlType; }
         }
 
+        public bool AddCancellationTokenOnInvoke { get; private set; }
+
         /// <summary>
         /// Return true if the CLR type specified in the Init() call has a matching method.
         /// </summary>
@@ -195,13 +198,17 @@ namespace System.Xml.Xsl.Runtime
             StringComparison comparison = ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
             // Find method in object type
+            bool addCancellationTokenOnInvoke;
             foreach (MethodInfo methSearch in methods)
             {
-                if (methSearch.Name.Equals(_name, comparison) && (_numArgs == -1 || methSearch.GetParameters().Length == _numArgs))
+                ParameterInfo[] parms =methSearch.GetParameters();
+                addCancellationTokenOnInvoke=false;
+                if (methSearch.Name.Equals(_name, comparison) && (_numArgs == -1 || parms.Length == _numArgs || (addCancellationTokenOnInvoke=(parms.Length==_numArgs+1 && parms[_numArgs].ParameterType==typeof(CancellationToken)))))
                 {
                     if (methMatch != null)
                         throw new XslTransformException(/*[XT_037]*/SR.XmlIl_AmbiguousExtensionMethod, _namespaceUri, _name, _numArgs.ToString(CultureInfo.InvariantCulture));
 
+                    AddCancellationTokenOnInvoke=addCancellationTokenOnInvoke;
                     methMatch = methSearch;
                 }
             }
